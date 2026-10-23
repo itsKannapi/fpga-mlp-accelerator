@@ -9,6 +9,7 @@ Pure numpy; run it as many times as you like while tuning.
 
 Inputs:   mlp_fp32.npz     (from train_mlp.py)
 Outputs:  rtl/w1.mem  w2.mem  b1.mem  b2.mem
+          rtl/w1_t.mem      (layer-1 weights, pixel-major, 256-bit words)
           rtl/test_images.mem
           rtl/params.vh
           rtl/golden.txt
@@ -152,12 +153,25 @@ def write_mem(path, values, bits):
 
 p = lambda name: os.path.join(OUT_DIR, name)
 
-# Weight memories. Layout is OUT-MAJOR: all 784 weights for neuron 0, then
-# all 784 for neuron 1, and so on. The RTL address generator must agree.
+# Weight memories. These are OUT-MAJOR: all 784 weights for neuron 0, then
+# all 784 for neuron 1, and so on. tb_mac.v reads w1.mem in this order.
 write_mem(p("w1.mem"), W1q, 8)     # 32 * 784 = 25088 entries
 write_mem(p("w2.mem"), W2q, 8)     # 10 *  32 =   320 entries
 write_mem(p("b1.mem"), b1q, 32)
 write_mem(p("b2.mem"), b2q, 32)
+
+# Layer-1 weights for the parallel datapath (layer1.v): PIXEL-MAJOR and
+# packed. One 256-bit word per pixel holds that pixel's weight for all 32
+# hidden neurons, so a single memory read per clock feeds all 32 MACs.
+# Neuron n occupies bits [8n+7:8n] -- neuron 0 is the LOW byte, which is the
+# RIGHTMOST two hex digits on each line.
+with open(p("w1_t.mem"), "w") as f:
+    n_hidden, n_in = W1q.shape
+    for i in range(n_in):
+        word = 0
+        for n in range(n_hidden):
+            word |= (int(W1q[n, i]) & 0xFF) << (8 * n)
+        f.write(f"{word:0{n_hidden * 2}x}\n")   # 784 lines x 64 hex digits
 
 # Test images for the on-board run.
 write_mem(p("test_images.mem"), Xq_test[:N_HW], 8)
@@ -217,4 +231,4 @@ memory footprint (int8 weights)
 with open("quant_report.txt", "w") as f:
     f.write(report)
 print(report)
-print(f"wrote {OUT_DIR}/ -- w1.mem w2.mem b1.mem b2.mem test_images.mem params.vh golden.txt")
+print(f"wrote {OUT_DIR}/ -- w1.mem w1_t.mem w2.mem b1.mem b2.mem test_images.mem params.vh golden.txt")

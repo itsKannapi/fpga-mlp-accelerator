@@ -1,0 +1,241 @@
+`timescale 1ns / 1ps
+`include "params.vh"
+// ============================================================================
+// tb_layer1.v -- self-checking testbench for layer1.v
+//
+// Runs all 64 golden images through the hardware layer 1 and checks, for
+// every one of the 32 hidden neurons:
+//   acc1  post-ReLU accumulator  (catches MAC / weight-layout / timing bugs)
+//   hq    requantized int8 value (catches rounding / shift / clamp bugs)
+// against the values quantize_export.py wrote to golden.txt.
+//
+// Also checks the control behavior:
+//   - latency is exactly the documented 786 cycles, every image
+//   - busy is high for the whole run and done pulses exactly once
+//   - a start pulse while busy is ignored (tested on image 0)
+//
+// Then a SYNTHETIC stage, because real MNIST digits have blind spots: their
+// border pixels are always 0 (so dropping the first or last pixel changes
+// nothing), and no neuron ever saturates (so a missing clamp is invisible).
+// Three made-up images close those gaps:
+//   ramp    every pixel nonzero and different -> any pixel skip/shift shows
+//   all127  maximum input                     -> large values, clamp
+//   hot     127 wherever the strongest neuron has a positive weight -> clamp
+// Expected values are computed here from w1.mem (the OUT-MAJOR file, not the
+// w1_t.mem the hardware reads), so a packing bug in w1_t.mem is caught too.
+// The stage reports how many neurons hit ReLU and the clamp, to prove those
+// paths were actually exercised.
+//
+// The pixel source is a model of a synchronous block RAM: pix_data is
+// registered, valid one cycle after pix_addr -- the same contract the real
+// image buffer will have on the board.
+// ============================================================================
+
+`ifndef DATA_DIR
+`define DATA_DIR "C:/dev/fpga-mlp/rtl/"
+`endif
+
+module tb_layer1;
+
+    localparam N_IN    = `N_IN;
+    localparam N_H     = `N_HIDDEN;
+    localparam ACC_W   = `ACC_W;
+    localparam N_IMG   = 64;        // golden.txt holds 64 images
+    localparam LATENCY = 786;       // documented in layer1.v
+    localparam N_SYN   = 3;         // synthetic images, stored after the 100 real ones
+    localparam SHIFT   = `SHIFT1;
+    localparam RND     = (`ROUND_SHIFT && SHIFT > 0) ? (1 << (SHIFT - 1)) : 0;
+
+    // ------------------------------------------------------------ DUT
+    reg                     clk = 0, rst = 1, start = 0;
+    wire                    busy, done;
+    wire [9:0]              pix_addr;
+    reg  [7:0]              pix_data = 0;
+    wire [N_H*8-1:0]        h_flat;
+    wire [N_H*ACC_W-1:0]    acc_flat;
+
+    layer1 dut (
+        .clk(clk), .rst(rst), .start(start),
+        .busy(busy), .done(done),
+        .pix_addr(pix_addr), .pix_data(pix_data),
+        .h_flat(h_flat), .acc_flat(acc_flat)
+    );
+
+    always #5 clk = ~clk;   // 100 MHz
+
+    // ------------------------------------------------------------ pixel RAM model
+    reg [7:0] img [0:(100+N_SYN)*N_IN-1];
+    integer   base = 0;     // first pixel of the current image
+    always @(posedge clk)
+        pix_data <= img[base + pix_addr];
+
+    // ------------------------------------------------------------ test body
+    // All DUT outputs are sampled 1 ns after a clock edge, never on it.
+    integer lat, extra_done, busy_drops;
+    integer n_fail = 0, n_pass = 0;
+    integer f_acc = 0, f_hq = 0, f_ctl = 0;
+    integer t, n, gv, rc, fd, got;
+    integer g_acc [0:N_H-1];
+    integer g_hq  [0:N_H-1];
+    reg [8*16-1:0] tok;
+
+    // reference data for the synthetic stage
+    reg [7:0]  w1 [0:N_H*N_IN-1];   // out-major, independent of w1_t.mem
+    reg [31:0] b1 [0:N_H-1];
+    integer s, i, best_n, best_sum, sum, f_syn = 0, n_relu = 0, n_clamp = 0;
+
+    // Reference requantize, written with division instead of a shift so it is
+    // a genuinely different implementation from the RTL's.
+    function integer ref_hq(input integer a);
+        integer q;
+        begin
+            if (a < 0) ref_hq = 0;
+            else begin
+                q = (a + RND) / (1 << SHIFT);
+                ref_hq = (q > 127) ? 127 : q;
+            end
+        end
+    endfunction
+
+    // Pulse start, wait for done, check control behavior. Shared by both stages.
+    task run_image(input integer img_idx, input integer stray_start);
+        begin
+            base       = img_idx * N_IN;
+            busy_drops = 0;
+            extra_done = 0;
+            start = 1; @(posedge clk); #1; start = 0;   // start sampled here
+
+            // lat = clock edges from the start edge until done is high
+            lat = 0;
+            while (!done && lat < 5000) begin
+                if (!busy) busy_drops = busy_drops + 1;
+                if (stray_start && lat == 100) start = 1;   // must be ignored
+                @(posedge clk); #1;
+                start = 0;
+                lat = lat + 1;
+            end
+            if (busy) busy_drops = busy_drops + 1;      // busy must be low once done
+
+            // done must be a single-cycle pulse, and nothing may restart
+            repeat (3) begin
+                @(posedge clk); #1;
+                if (done || busy) extra_done = extra_done + 1;
+            end
+
+            if (lat != LATENCY || extra_done != 0 || busy_drops != 0) begin
+                f_ctl = f_ctl + 1;
+                $display("FAIL  img %0d control: latency=%0d (want %0d) extra_done/busy=%0d busy_drops=%0d",
+                         img_idx, lat, LATENCY, extra_done, busy_drops);
+            end
+        end
+    endtask
+
+    initial begin
+        $display("==== tb_layer1 ====");
+        $readmemh({`DATA_DIR, "test_images.mem"}, img, 0, 100*N_IN - 1);
+        fd = $fopen({`DATA_DIR, "golden.txt"}, "r");
+        if (fd == 0) begin
+            $display("FAIL  could not open golden.txt -- check DATA_DIR");
+            $finish;
+        end
+        rc = $fscanf(fd, "%s", tok);
+        while (tok != "img") rc = $fscanf(fd, "%s", tok);
+
+        repeat (3) @(posedge clk);
+        #1 rst = 0;
+        @(posedge clk); #1;
+
+        for (t = 0; t < N_IMG; t = t + 1) begin
+            // ---- read this image's golden record
+            rc = $fscanf(fd, "%d %s %d %s %d", gv, tok, gv, tok, gv);
+            rc = $fscanf(fd, "%s", tok);                               // acc1
+            for (n = 0; n < N_H; n = n + 1) rc = $fscanf(fd, "%d", g_acc[n]);
+            rc = $fscanf(fd, "%s", tok);                               // hq
+            for (n = 0; n < N_H; n = n + 1) rc = $fscanf(fd, "%d", g_hq[n]);
+            rc = $fscanf(fd, "%s", tok);                               // acc2
+            for (n = 0; n < 10;  n = n + 1) rc = $fscanf(fd, "%d", gv);
+            rc = $fscanf(fd, "%s", tok);                               // next img
+
+            // ---- run it (stray start pulse on image 0 only)
+            run_image(t, t == 0);
+
+            // ---- data checks
+            for (n = 0; n < N_H; n = n + 1) begin
+                got = $signed(acc_flat[ACC_W*n +: ACC_W]);
+                if (got < 0) got = 0;                      // golden is post-ReLU
+                if (got !== g_acc[n]) begin
+                    f_acc = f_acc + 1;
+                    if (f_acc <= 10)
+                        $display("FAIL  img %0d neuron %0d acc1: expected %0d, got %0d",
+                                 t, n, g_acc[n], got);
+                end else n_pass = n_pass + 1;
+
+                got = h_flat[8*n +: 8];
+                if (got !== g_hq[n]) begin
+                    f_hq = f_hq + 1;
+                    if (f_hq <= 10)
+                        $display("FAIL  img %0d neuron %0d hq:   expected %0d, got %0d",
+                                 t, n, g_hq[n], got);
+                end else n_pass = n_pass + 1;
+            end
+        end
+        $fclose(fd);
+
+        // ============================================== synthetic stage
+        $readmemh({`DATA_DIR, "w1.mem"}, w1);
+        $readmemh({`DATA_DIR, "b1.mem"}, b1);
+
+        // strongest neuron = largest bias + 127 * (sum of positive weights)
+        best_n = 0; best_sum = -2147483647;
+        for (n = 0; n < N_H; n = n + 1) begin
+            sum = $signed(b1[n]);
+            for (i = 0; i < N_IN; i = i + 1)
+                if ($signed(w1[n*N_IN + i]) > 0) sum = sum + 127 * $signed(w1[n*N_IN + i]);
+            if (sum > best_sum) begin best_sum = sum; best_n = n; end
+        end
+
+        for (i = 0; i < N_IN; i = i + 1) begin
+            img[(100 + 0)*N_IN + i] = (i % 127) + 1;                                   // ramp
+            img[(100 + 1)*N_IN + i] = 127;                                             // all127
+            img[(100 + 2)*N_IN + i] = ($signed(w1[best_n*N_IN + i]) > 0) ? 127 : 0;    // hot
+        end
+
+        for (s = 0; s < N_SYN; s = s + 1) begin
+            run_image(100 + s, 0);
+            for (n = 0; n < N_H; n = n + 1) begin
+                sum = $signed(b1[n]);
+                for (i = 0; i < N_IN; i = i + 1)
+                    // {1'b0, pixel} keeps the product signed; an unsigned
+                    // operand would make Verilog do the whole multiply unsigned
+                    sum = sum + $signed({1'b0, img[(100 + s)*N_IN + i]}) * $signed(w1[n*N_IN + i]);
+                got = $signed(acc_flat[ACC_W*n +: ACC_W]);    // RAW, pre-ReLU
+                if (sum < 0) n_relu = n_relu + 1;
+                if (ref_hq(sum) == 127 && (sum + RND) / (1 << SHIFT) > 127) n_clamp = n_clamp + 1;
+                if (got !== sum || h_flat[8*n +: 8] !== ref_hq(sum)) begin
+                    f_syn = f_syn + 1;
+                    if (f_syn <= 10)
+                        $display("FAIL  synthetic %0d neuron %0d: acc expected %0d got %0d, hq expected %0d got %0d",
+                                 s, n, sum, got, ref_hq(sum), h_flat[8*n +: 8]);
+                end else n_pass = n_pass + 1;
+            end
+        end
+
+        n_fail = f_acc + f_hq + f_ctl + f_syn;
+        $display("acc1     : %0d images x %0d neurons, %0d fail", N_IMG, N_H, f_acc);
+        $display("hq       : %0d images x %0d neurons, %0d fail", N_IMG, N_H, f_hq);
+        $display("synthetic: %0d images x %0d neurons, %0d fail  (exercised ReLU %0d times, clamp %0d times)",
+                 N_SYN, N_H, f_syn, n_relu, n_clamp);
+        $display("control  : %0d images, %0d fail  (latency %0d cycles = %0d ns)",
+                 N_IMG + N_SYN, f_ctl, LATENCY, LATENCY * 10);
+        $display("================================");
+        if (n_clamp == 0)
+            $display("WARNING  clamp path never exercised -- test is incomplete");
+        if (n_fail == 0)
+            $display("ALL TESTS PASSED  (%0d checks)", n_pass + N_IMG + N_SYN);
+        else
+            $display("%0d CHECKS FAILED", n_fail);
+        $display("================================");
+        $finish;
+    end
+
+endmodule
