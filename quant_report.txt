@@ -1,0 +1,26 @@
+int8 quantization report
+========================
+float32 test accuracy : 95.86%
+int8    test accuracy : 95.86%
+accuracy delta        : +0.00 pp
+prediction agreement  : 99.74%  (int8 vs float32, same input)
+
+scales
+  s_x   (input)   : 0.00787402
+  s_w1  (layer 1) : 0.00697994
+  s_w2  (layer 2) : 0.00748828
+  s_h   (hidden)  : 0.22511666
+
+requantization
+  SHIFT1          : 12   (rounding: on)
+  max post-ReLU acc1 on calib : 294415
+
+accumulator headroom
+  peak |acc| observed : 294415
+  int32 limit         : 2147483647
+  headroom            : 7294x
+
+memory footprint (int8 weights)
+  w1 : 25088 B
+  w2 : 320 B
+  total weights : 24.8 KiB

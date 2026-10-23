@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------- Python
+.venv/
+__pycache__/
+*.pyc
+
+# MNIST download -- regenerable, ~60 MB
+data/
+
+# Float weights + full test set, ~37 MB. Regenerable, but training is not
+# bit-reproducible across machines, so rtl/ (committed) is the canonical copy
+# of the weights, NOT this file.
+*.npz
+
+# ---------------------------------------------------------------- Vivado
+# The Vivado project lives entirely in vivado/ and is treated as disposable.
+# Real sources live in src/ (Verilog, XDC) and rtl/ (generated .mem files),
+# added to the project WITHOUT "Copy sources into project".
+vivado/
+
+# Stray Vivado droppings if it's ever launched from the repo root
+.Xil/
+*.jou
+*.log
+*.str
+webtalk*
+
+# ---------------------------------------------------------------- OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
