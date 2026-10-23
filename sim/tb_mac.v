@@ -1,0 +1,204 @@
+`timescale 1ns / 1ps
+// ============================================================================
+// tb_mac.v -- self-checking testbench for mac.v
+//
+// Three levels of evidence, cheapest first:
+//
+//   1. DIRECTED  hand-picked edge cases: sign handling, extreme values,
+//                hold behavior, load priority
+//   2. RANDOM    thousands of random dot products against a reference
+//                computed right here in the testbench
+//   3. GOLDEN    the real thing: computes layer-1 neurons using the actual
+//                quantized weights and test images from rtl/, and compares
+//                against acc1 values that quantize_export.py wrote to
+//                golden.txt. Python and Verilog are fully independent here,
+//                so agreement means the hardware matches the model.
+//
+// Prints a PASS/FAIL summary at the end. Any FAIL line names exactly which
+// check broke and what value it expected.
+//
+// DATA_DIR must point at the folder holding w1.mem, b1.mem,
+// test_images.mem and golden.txt. Forward slashes, trailing slash.
+// ============================================================================
+
+`ifndef DATA_DIR
+`define DATA_DIR "C:/dev/fpga-mlp/rtl/"
+`endif
+
+module tb_mac;
+
+    // ------------------------------------------------------------ config
+    localparam ACC_W         = 32;
+    localparam N_IN          = 784;
+    localparam N_HIDDEN      = 32;
+    localparam N_RANDOM      = 2000;   // random dot products in test 2
+    localparam N_GOLDEN_IMG  = 8;      // images checked in test 3 (max 64)
+
+    // ------------------------------------------------------------ DUT
+    reg                     clk = 0;
+    reg                     load = 0, en = 0;
+    reg  signed [7:0]       a = 0, b = 0;
+    reg  signed [ACC_W-1:0] init = 0;
+    wire signed [ACC_W-1:0] acc;
+
+    mac #(.ACC_W(ACC_W)) dut (
+        .clk(clk), .load(load), .en(en),
+        .a(a), .b(b), .init(init), .acc(acc)
+    );
+
+    always #5 clk = ~clk;   // 100 MHz, matches the Basys 3 oscillator
+
+    // ------------------------------------------------------------ bookkeeping
+    integer n_pass = 0;
+    integer n_fail = 0;
+
+    task check(input signed [ACC_W-1:0] expected, input [8*48-1:0] what);
+        begin
+            if (acc === expected)
+                n_pass = n_pass + 1;
+            else begin
+                n_fail = n_fail + 1;
+                $display("FAIL  %0s : expected %0d, got %0d", what, expected, acc);
+            end
+        end
+    endtask
+
+    // Apply whatever inputs are currently set for exactly one clock edge.
+    // Inputs change #1 after the edge, so there is never a setup race.
+    task tick;
+        begin
+            @(posedge clk);
+            #1;
+        end
+    endtask
+
+    task do_load(input signed [ACC_W-1:0] value);
+        begin
+            load = 1; en = 0; init = value;
+            tick;
+            load = 0;
+        end
+    endtask
+
+    task do_mac(input signed [7:0] x, input signed [7:0] y);
+        begin
+            en = 1; a = x; b = y;
+            tick;
+            en = 0;
+        end
+    endtask
+
+    // ------------------------------------------------------------ data from rtl/
+    reg [7:0]  w1  [0:N_HIDDEN*N_IN-1];
+    reg [31:0] b1  [0:N_HIDDEN-1];
+    reg [7:0]  img [0:100*N_IN-1];
+
+    // ------------------------------------------------------------ test body
+    integer t, i, n, k, len, fd, rc, gv, ival;
+    integer ref_acc, relu_acc;
+    reg [8*16-1:0] tok;
+    reg signed [7:0] rx, ry;
+
+    initial begin
+        $display("==== tb_mac ====");
+
+        // ======================================================== 1. DIRECTED
+        do_load(0);                     check(0,      "load zero");
+        do_mac(127, 127);               check(16129,  "127 * 127");
+        do_mac(-127, 127);              check(0,      "+ (-127 * 127)");
+        do_mac(-128, -128);             check(16384,  "-128 * -128 (sign)");
+        do_mac(127, -128);              check(128,    "+ (127 * -128)");
+        do_mac(0, -77);                 check(128,    "times zero");
+
+        // en = 0 must hold the value, even with live inputs on a and b
+        a = 99; b = 99; en = 0;
+        tick; tick; tick;               check(128,    "hold when en=0");
+
+        do_load(-5000);                 check(-5000,  "load negative bias");
+        do_mac(-1, 1);                  check(-5001,  "small negative step");
+
+        // load must win when load and en are asserted together
+        load = 1; en = 1; init = 42; a = 100; b = 100;
+        tick;
+        load = 0; en = 0;               check(42,     "load beats en");
+
+        $display("directed : %0d pass, %0d fail", n_pass, n_fail);
+
+        // ======================================================== 2. RANDOM
+        k = n_fail;
+        for (t = 0; t < N_RANDOM; t = t + 1) begin
+            ival    = $random % 1000000;   // bias-sized, either sign
+            len     = 1 + ({$random} % N_IN);
+            ref_acc = ival;
+            do_load(ival);
+            for (i = 0; i < len; i = i + 1) begin
+                rx = $random;
+                ry = $random;
+                ref_acc = ref_acc + rx * ry;
+                do_mac(rx, ry);
+            end
+            check(ref_acc, "random dot product");
+        end
+        $display("random   : %0d dot products, %0d fail", N_RANDOM, n_fail - k);
+
+        // ======================================================== 3. GOLDEN
+        $readmemh({`DATA_DIR, "w1.mem"},          w1);
+        $readmemh({`DATA_DIR, "b1.mem"},          b1);
+        $readmemh({`DATA_DIR, "test_images.mem"}, img);
+
+        fd = $fopen({`DATA_DIR, "golden.txt"}, "r");
+        if (fd == 0) begin
+            $display("FAIL  could not open golden.txt -- check DATA_DIR");
+            n_fail = n_fail + 1;
+        end else begin
+            k = n_fail;
+            // skip the '#' header: four tokens before the first 'img'
+            rc = $fscanf(fd, "%s", tok);
+            while (tok != "img") rc = $fscanf(fd, "%s", tok);
+
+            for (t = 0; t < N_GOLDEN_IMG; t = t + 1) begin
+                // 'img' already consumed -> idx label L pred P
+                rc = $fscanf(fd, "%d %s %d %s %d", gv, tok, gv, tok, gv);
+                rc = $fscanf(fd, "%s", tok);                 // 'acc1'
+
+                for (n = 0; n < N_HIDDEN; n = n + 1) begin
+                    rc = $fscanf(fd, "%d", gv);              // golden acc1[n]
+
+                    do_load($signed(b1[n]));
+                    for (i = 0; i < N_IN; i = i + 1)
+                        do_mac($signed(img[t*N_IN + i]), $signed(w1[n*N_IN + i]));
+
+                    // golden.txt stores post-ReLU values
+                    relu_acc = (acc < 0) ? 0 : acc;
+                    if (relu_acc === gv)
+                        n_pass = n_pass + 1;
+                    else begin
+                        n_fail = n_fail + 1;
+                        $display("FAIL  golden img %0d neuron %0d : expected %0d, got %0d",
+                                 t, n, gv, relu_acc);
+                    end
+                end
+
+                // skip the hq and acc2 lines, then consume the next 'img'
+                rc = $fscanf(fd, "%s", tok);
+                for (n = 0; n < N_HIDDEN; n = n + 1) rc = $fscanf(fd, "%d", gv);
+                rc = $fscanf(fd, "%s", tok);
+                for (n = 0; n < 10; n = n + 1)       rc = $fscanf(fd, "%d", gv);
+                rc = $fscanf(fd, "%s", tok);
+            end
+            $fclose(fd);
+            $display("golden   : %0d images x %0d neurons, %0d fail",
+                     N_GOLDEN_IMG, N_HIDDEN, n_fail - k);
+        end
+
+        // ======================================================== summary
+        $display("================================");
+        if (n_fail == 0)
+            $display("ALL TESTS PASSED  (%0d checks)", n_pass);
+        else
+            $display("%0d CHECKS FAILED  (%0d passed)", n_fail, n_pass);
+        $display("================================");
+        $finish;
+    end
+
+endmodule
