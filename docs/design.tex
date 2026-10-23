@@ -319,8 +319,9 @@ Testbench & What it checks & Checks & Status \\
 \bottomrule
 \end{tabularx}
 \end{center}
-All pass in Icarus Verilog (\file{scripts/run\_sims.sh}). \file{tb\_mac} and
-\file{tb\_layer1} have also been confirmed in Vivado's simulator (xsim).
+All pass in Icarus Verilog (\file{scripts/run\_sims.sh}). \file{tb\_mac},
+\file{tb\_layer1}, and the end-to-end \file{tb\_mlp\_core} are also confirmed in
+Vivado's simulator (xsim).
 
 \subsection{Why \file{tb\_layer1} needs synthetic images}
 Mutation testing showed that real MNIST digits have blind spots. Their border

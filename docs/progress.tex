@@ -78,7 +78,8 @@ Newest first. Commit hashes refer to the \texttt{main} branch.
         the Python model (both miss image 8, a 5 read as a 6).
   \item New testbenches \file{tb\_layer2} (737 checks), \file{tb\_argmax} (4{,}024),
         \file{tb\_mlp\_core} (2{,}880). All five testbenches: 14{,}166 checks, all pass
-        in Icarus. New ones still to be confirmed in Vivado xsim.
+        in Icarus. \textbf{\file{tb\_mlp\_core} also passes in Vivado xsim} (99/100,
+        same latency and throughput).
   \item 12 planted bugs, all caught. Two findings: a wrong tie-break passes the whole
         end-to-end test (real scores never tie), so \file{tb\_argmax} is essential; and a
         stray-start bug was first caught only by luck, so \file{tb\_mlp\_core} now watches
@@ -86,6 +87,9 @@ Newest first. Commit hashes refer to the \texttt{main} branch.
   \item Estimated resources for the full core (Yosys): 42 DSP, 15 RAMB18, 2.2k LUT.
   \item The project script now works in Vivado 2026.1 (confirmed). Its default
         tops are now \file{mlp\_core} and \file{tb\_mlp\_core}. Repo pushed to GitHub.
+  \item Commit author email fixed to the GitHub \texttt{noreply} address and history
+        rewritten once, so commits are credited to the account. All hashes in this log
+        are post-rewrite. Commit \texttt{ca57678}.
 \end{itemize}
 
 \subsection*{2026-10-16 \quad Layer 1 verified; repo prepared for the team}
@@ -103,7 +107,7 @@ Newest first. Commit hashes refer to the \texttt{main} branch.
   \item Added two scripts: \file{create\_project.tcl} rebuilds the Vivado project on
         any machine, and \file{run\_sims.sh} runs every testbench in Icarus.
         Started these docs.
-  \item Commit \texttt{e044fd4} (layer 1); docs/portability commit to follow.
+  \item Commits \texttt{3782b62} (layer 1) and \texttt{6cdeeb6} (docs, portability).
 \end{itemize}
 
 \subsection*{2026-10-09 \quad MAC unit verified}
@@ -112,7 +116,7 @@ Newest first. Commit hashes refer to the \texttt{main} branch.
   \item \file{sim/tb\_mac.v}: 10 directed + 2{,}000 random + 256 golden checks
         (2{,}266 total), \textbf{all pass in Vivado xsim} using the real trained weights.
   \item Three planted bugs each caught; each test tier catches bugs the others miss.
-  \item Commit \texttt{1276047}.
+  \item Commit \texttt{d5a2dcb}.
 \end{itemize}
 
 \subsection*{2026-10-08 \quad Board bring-up; model trained and quantized}
@@ -122,7 +126,7 @@ Newest first. Commit hashes refer to the \texttt{main} branch.
   \item Trained the $784\rightarrow32\rightarrow10$ MLP: 95.86\% test accuracy.
         int8 version also 95.86\% (99.74\% of predictions identical). \texttt{SHIFT1}~=~12.
   \item Golden vectors for 64 images exported to \file{rtl/golden.txt}.
-  \item Commit \texttt{7e70d2d}.
+  \item Commit \texttt{cf55ba9}.
 \end{itemize}
 
 \subsection*{2026-10-01 \quad Vivado installed}
@@ -149,12 +153,8 @@ it is finishable before internship application deadlines.
     Joey's machine can re-run \file{quantize\_export.py}. Fix before anyone needs
     a new export: commit a small weights-only file and have the script load test
     data itself. & TBD \\
-2 & Commit author email is the literal placeholder
-    \texttt{ID+itsKannapi@users.noreply.github.com}, so GitHub does not credit these
-    commits to an account. Fix the git config, rewrite history once, force-push
-    (before teammates clone). This changes every commit hash in this log. & Joey \\
-3 & Confirm \file{tb\_layer2}, \file{tb\_argmax}, \file{tb\_mlp\_core} in Vivado xsim
-    (so far Icarus only). & Joey \\
+2 & \file{tb\_layer2} and \file{tb\_argmax} have only run in Icarus. Their modules are
+    covered in xsim through \file{tb\_mlp\_core}; run them in xsim when convenient. & TBD \\
 \bottomrule
 \end{tabularx}
 \end{center}
