@@ -3,7 +3,7 @@
 \newcommand{\doctitle}{Progress Log}
 
 \begin{document}
-\makedoctitle{Milestones, dated log, open issues, and lessons learned}{2026-10-16}
+\makedoctitle{Milestones, dated log, open issues, and lessons learned}{2026-10-22}
 
 \begin{note}[How to update this document]
 Update it in the \emph{same pull request} as the work it describes: flip the
@@ -43,9 +43,9 @@ Wk & Milestone & Owner & Status \\
 1 & MAC unit + three-tier self-checking testbench & Joey & \done \\
 \midrule
 2 & Layer 1: 32 parallel MACs, ReLU + requantize, bit-exact vs.\ golden & Joey & \done \\
-2 & Repo made portable (project script, Icarus runner); docs; GitHub & Joey & \inprog \\
-2 & Layer 2 (32$\rightarrow$10) + argmax & TBD & \todo \\
-2 & Full-network testbench: predicted digit + all 10 scores vs.\ golden & TBD & \todo \\
+2 & Repo made portable (project script, Icarus runner); docs; GitHub & Joey & \done \\
+2 & Layer 2 (32$\rightarrow$10) + argmax & Joey & \done \\
+2 & Full-network testbench: predicted digit + all 10 scores vs.\ golden & Joey & \done \\
 \midrule
 3 & Image buffer (784\,B BRAM) + UART receiver & TBD & \todo \\
 3 & UART transmitter for the prediction; define the host protocol & TBD & \todo \\
@@ -64,6 +64,29 @@ Wk & Milestone & Owner & Status \\
 % ============================================================================
 \section{Log}
 Newest first. Commit hashes refer to the \texttt{main} branch.
+
+\subsection*{2026-10-22 \quad Full classifier working in simulation}
+\begin{itemize}
+  \item Added \file{src/layer2.v} (10 MACs, 34 cycles), \file{src/argmax.v} (one
+        score per clock, lowest index wins ties, 10 cycles), and \file{src/mlp\_core.v},
+        which chains everything: \textbf{pixels in, digit out, 832 cycles (8.32\,\textmu s)}.
+        Streaming with \texttt{start} held high: one result every 833 cycles
+        ($\approx$120k images/s).
+  \item Exporter now also writes \file{rtl/w2\_t.mem}; every existing file reproduced
+        byte for byte.
+  \item \textbf{Simulated accuracy: 99/100} on the first 100 test images, identical to
+        the Python model (both miss image 8, a 5 read as a 6).
+  \item New testbenches \file{tb\_layer2} (737 checks), \file{tb\_argmax} (4{,}024),
+        \file{tb\_mlp\_core} (2{,}880). All five testbenches: 14{,}166 checks, all pass
+        in Icarus. New ones still to be confirmed in Vivado xsim.
+  \item 12 planted bugs, all caught. Two findings: a wrong tie-break passes the whole
+        end-to-end test (real scores never tie), so \file{tb\_argmax} is essential; and a
+        stray-start bug was first caught only by luck, so \file{tb\_mlp\_core} now watches
+        all stages for 1{,}000 cycles after each stray start.
+  \item Estimated resources for the full core (Yosys): 42 DSP, 15 RAMB18, 2.2k LUT.
+  \item The project script now works in Vivado 2026.1 (confirmed). Its default
+        tops are now \file{mlp\_core} and \file{tb\_mlp\_core}. Repo pushed to GitHub.
+\end{itemize}
 
 \subsection*{2026-10-16 \quad Layer 1 verified; repo prepared for the team}
 \begin{itemize}
@@ -118,7 +141,7 @@ it is finishable before internship application deadlines.
 % ============================================================================
 \section{Open issues}
 \begin{center}
-\begin{tabularx}{\linewidth}{@{}p{0.5cm}Xp{2.2cm}@{}}
+\begin{tabularx}{\linewidth}{@{}p{0.5cm}>{\raggedright\arraybackslash}Xp{2.2cm}@{}}
 \toprule
 \# & Issue & Owner \\
 \midrule
@@ -126,11 +149,12 @@ it is finishable before internship application deadlines.
     Joey's machine can re-run \file{quantize\_export.py}. Fix before anyone needs
     a new export: commit a small weights-only file and have the script load test
     data itself. & TBD \\
-2 & \file{scripts/create\_project.tcl} has been dry-run but not yet run inside
-    Vivado. First person to use it: confirm, then close this. & Joey \\
-3 & Commit history contains a personal email address. It can only be cheaply
-    replaced with the GitHub \texttt{noreply} address \emph{before} the first push;
-    doing so changes every commit hash in this log. & Joey \\
+2 & Commit author email is the literal placeholder
+    \texttt{ID+itsKannapi@users.noreply.github.com}, so GitHub does not credit these
+    commits to an account. Fix the git config, rewrite history once, force-push
+    (before teammates clone). This changes every commit hash in this log. & Joey \\
+3 & Confirm \file{tb\_layer2}, \file{tb\_argmax}, \file{tb\_mlp\_core} in Vivado xsim
+    (so far Icarus only). & Joey \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -148,12 +172,17 @@ it is finishable before internship application deadlines.
   \item \textbf{Real data can hide bugs.} MNIST borders are blank, so pixel-skip
         bugs pass real images. Always add synthetic inputs that touch every path,
         and use mutation testing to prove the testbench can fail.
+  \item \textbf{Some rules need their own test.} Real MNIST scores never tie, so
+        argmax's tie-break can only be checked with made-up inputs.
+  \item \textbf{A bug caught by luck is a gap.} If a bug shows up only as a side
+        effect on a later test, make a check that catches it where it happens.
   \item \textbf{Weight layout is part of the interface.} Changing from neuron-major
         to pixel-major needed a new export file; the testbench checks one layout
         against the other.
 \end{itemize}
 
 % ============================================================================
+\needspace{12\baselineskip}
 \section{Entry template}\label{sec:template}
 \begin{lstlisting}[language={[LaTeX]TeX}]
 \subsection*{YYYY-MM-DD \quad Short title}

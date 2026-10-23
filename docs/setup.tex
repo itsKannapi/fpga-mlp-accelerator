@@ -3,7 +3,7 @@
 \newcommand{\doctitle}{Developer Setup Guide}
 
 \begin{document}
-\makedoctitle{From a fresh machine to passing testbenches, and how we work together}{2026-10-16}
+\makedoctitle{From a fresh machine to passing testbenches, and how we work together}{2026-10-22}
 
 \begin{note}[Short version]
 Clone the repo $\rightarrow$ install Vivado 2026.1 (Artix-7 only) and its free
@@ -104,22 +104,27 @@ after a teammate adds a new source file.
 
 \subsection{In Vivado}
 \emph{Flow Navigator $\rightarrow$ Run Simulation $\rightarrow$ Run Behavioral
-Simulation}. Read the result in the Tcl Console (scroll up if needed). To run a
-different testbench, type
+Simulation}. Read the result in the Tcl Console (scroll up if needed). The
+script sets \file{tb\_mlp\_core} (the end-to-end test) as the default. To run a
+different testbench, type e.g.\
 \cmd{set\_property top tb\_mac [get\_filesets sim\_1]} and run again.
 
 \begin{center}
 \begin{tabular}{@{}lll@{}}
 \toprule
-Testbench & Expected last lines & Time in xsim \\
+Testbench & Expected last lines & Notes \\
 \midrule
-\file{tb\_mac}    & \texttt{ALL TESTS PASSED (2266 checks)} & $\sim$20\,s \\
-\file{tb\_layer1} & \texttt{ALL TESTS PASSED (4259 checks)} & under a minute \\
+\file{tb\_mlp\_core} & \texttt{ALL TESTS PASSED (2880 checks)} & also prints \texttt{ACCURACY : 99 / 100} \\
+\file{tb\_layer1}    & \texttt{ALL TESTS PASSED (4259 checks)} & ReLU exercised 41$\times$, clamp 2$\times$ \\
+\file{tb\_layer2}    & \texttt{ALL TESTS PASSED (737 checks)}  & \\
+\file{tb\_argmax}    & \texttt{ALL TESTS PASSED (4024 checks)} & 526 random tied cases \\
+\file{tb\_mac}       & \texttt{ALL TESTS PASSED (2266 checks)} & \\
 \bottomrule
 \end{tabular}
 \end{center}
-\file{tb\_layer1} also prints \emph{exercised ReLU 41 times, clamp 2 times}. If
-you see \texttt{could not open golden.txt}, the project wasn't made by the script:
+xsim takes from about 20 seconds (\file{tb\_mac}) to a few minutes
+(\file{tb\_mlp\_core}). If you see \texttt{could not open golden.txt} or
+\texttt{cannot open include file}, the project wasn't made by the script:
 re-run Section~\ref{sec:proj}.
 
 \subsection{Without Vivado: Icarus Verilog}\label{sec:icarus}

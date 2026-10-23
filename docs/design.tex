@@ -3,7 +3,7 @@
 \newcommand{\doctitle}{Design Specification}
 
 \begin{document}
-\makedoctitle{Architecture, arithmetic contract, and verification of the int8 MNIST accelerator}{2026-10-16}
+\makedoctitle{Architecture, arithmetic contract, and verification of the int8 MNIST accelerator}{2026-10-22}
 
 \begin{note}[How to use this document]
 This is the \emph{reference}: what the hardware does and why. If the RTL and this
@@ -121,7 +121,8 @@ File & Contents \\
 \file{w1.mem}           & Layer-1 weights, \textbf{neuron-major}: 784 weights for neuron 0, then neuron 1, \ldots{} One int8 per line. Used by \file{tb\_mac.v}. \\
 \file{w1\_t.mem}        & Layer-1 weights, \textbf{pixel-major and packed}: 784 lines, each a 256-bit word holding pixel $i$'s weight for all 32 neurons. Neuron $n$ is bits $[8n{+}7{:}8n]$, so neuron 0 is the rightmost two hex digits. Read by \file{layer1.v}. \\
 \file{b1.mem}, \file{b2.mem} & Biases, int32, two's complement hex. \\
-\file{w2.mem}           & Layer-2 weights, neuron-major (10 $\times$ 32). \\
+\file{w2.mem}           & Layer-2 weights, class-major (10 $\times$ 32). Used by \file{tb\_layer2.v}. \\
+\file{w2\_t.mem}        & Layer-2 weights, \textbf{hidden-major and packed}: 32 lines, each an 80-bit word holding hidden unit $j$'s weight for all 10 classes; class $n$ in bits $[8n{+}7{:}8n]$. Read by \file{layer2.v}. \\
 \file{test\_images.mem}, \file{test\_labels.txt} & First 100 MNIST test images (int8) and labels, for the on-board run. \\
 \file{golden.txt}       & For the first 64 test images: label, prediction, and every intermediate value (\texttt{acc1}, \texttt{hq}, \texttt{acc2}). The testbenches compare against this. \\
 \bottomrule
@@ -142,9 +143,10 @@ File & Contents \\
   lbl/.style={font=\scriptsize, color=muted}]
   \node[plan] (src) {Image buffer\\\scriptsize 784 B BRAM\\\scriptsize (from UART)};
   \node[blk, right=1.5cm of src, minimum width=3.6cm] (l1) {\textbf{Layer 1}\\\scriptsize 32 MACs in parallel\\\scriptsize ReLU + requantize};
-  \node[plan, right=1.1cm of l1] (l2) {Layer 2\\\scriptsize 10 MACs};
-  \node[plan, right=1.5cm of l2] (am) {argmax};
+  \node[blk, right=1.1cm of l1] (l2) {\textbf{Layer 2}\\\scriptsize 10 MACs};
+  \node[blk, right=1.5cm of l2] (am) {\textbf{argmax}\\\scriptsize 1 per clock};
   \node[mem, above=0.55cm of l1] (wr) {weight ROM \file{w1\_t.mem}\\784 $\times$ 256 bit};
+  \node[draw=accent, dashed, rounded corners=4pt, inner sep=7pt, fit=(l1)(l2)(am)(wr), label={[font=\scriptsize\color{accent}, anchor=north east]north east:\file{mlp\_core.v}}] {};
   \draw[arr] (src) -- node[above, lbl]{pixel} node[below, lbl]{1/clk} (l1);
   \draw[arr] (wr) -- (l1);
   \draw[arr] (l1) -- node[above, lbl]{$h[32]$} node[below, lbl]{int8} (l2);
@@ -211,22 +213,70 @@ $k+2$   & MACs accumulate pixel $k$ \quad ($k = 0 \ldots 783$, so edges 2--785) 
 \end{center}
 \textbf{Latency: 786 cycles = 7.86\,\textmu s at 100\,MHz.}
 
-\subsection{Resource estimate}
-Synthesized for Artix-7 with the open-source Yosys flow; Vivado's numbers will
-be recorded here once the full design is implemented.
+\subsection{Layer 2 (\file{src/layer2.v})}
+The same broadcast pattern at a smaller size: 10 MACs, one per class. Each clock
+one hidden value $h[j]$ goes to all 10 MACs, and an 80-bit word from
+\file{w2\_t.mem} gives each its weight. The hidden value is registered on its
+way in, so it arrives with the same one-cycle latency a block-RAM pixel has in
+layer~1, and the control logic is cycle-for-cycle identical to layer~1 with
+32 inputs instead of 784.
+
+There is \textbf{no ReLU or requantize}: the 10 raw int32 scores go straight to
+argmax, which only compares them. Ports mirror layer~1: \texttt{start},
+\texttt{busy}, \texttt{done}, \texttt{h\_flat} in (must stay stable while busy),
+\texttt{scores\_flat} out (class $n$ in bits $[32n{+}31{:}32n]$).
+\textbf{Latency: 34 cycles.}
+
+\subsection{argmax (\file{src/argmax.v})}
+Returns the index of the largest score, scanning one score per clock. A
+single-cycle 10-way comparison is a chain of nine 32-bit comparators, a likely
+timing problem at 100\,MHz. The scan costs 10 cycles, about 1\% of the total.
+
+\textbf{Tie-break:} the \emph{lowest} index wins, matching \texttt{numpy.argmax},
+which produced the golden predictions. That comes from a strict \texttt{>} while
+scanning upward. \texttt{>=} would silently pick the highest index instead.
+Outputs \texttt{digit} (0--9) and \texttt{best} (the winning score).
+\textbf{Latency: 10 cycles.}
+
+\subsection{Full classifier (\file{src/mlp\_core.v})}
+Chains the three stages: each one starts on the previous stage's \texttt{done}
+pulse. The core accepts \texttt{start} only when the \emph{whole chain} is idle.
+Layer~1 alone would accept a new image while layer~2 is still working, and its
+next result would then overwrite \texttt{h\_flat} under layer~2. \texttt{busy}
+drops in the same cycle \texttt{done} pulses, so holding \texttt{start} high
+streams images back to back.
 
 \begin{center}
-\begin{tabular}{@{}lrrr@{}}
+\begin{tabular}{@{}lr@{}}
 \toprule
-Resource & Layer 1 uses & Basys~3 has & Share \\
-\midrule
-DSP48E1 slices        & 32     & 90      & 36\% \\
-Block RAM (RAMB18)    & 15     & 100     & 15\% \\
-LUTs                  & 1{,}657 & 20{,}800 & 8\% \\
-Flip-flops            & 1{,}299 & 41{,}600 & 3\% \\
+Latency, start to digit                 & 832 cycles = 8.32\,\textmu s \\
+\quad layer 1 / handoff / layer 2 / handoff / argmax & 786 / 1 / 34 / 1 / 10 \\
+Streaming throughput (start held high)  & 833 cycles per image $\approx$ 120{,}000 images/s \\
+Accuracy, first 100 test images (simulated) & \textbf{99 / 100} (same as Python) \\
 \bottomrule
 \end{tabular}
 \end{center}
+The one miss, test image 8 (a 5 classified as 6), is also misclassified by the
+Python model: the hardware reproduces the model, including its mistakes.
+
+\subsection{Resource estimate}
+Synthesized for Artix-7 with the open-source Yosys flow; Vivado's numbers will
+be recorded here once the board-level design is implemented.
+
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Resource & Layer 1 & Full core & Basys~3 has & Core share \\
+\midrule
+DSP48E1 slices        & 32      & 42      & 90      & 47\% \\
+Block RAM (RAMB18)    & 15      & 15      & 100     & 15\% \\
+LUTs                  & 1{,}657 & 2{,}162 & 20{,}800 & 10\% \\
+Flip-flops            & 1{,}299 & 1{,}408 & 41{,}600 & 3\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+Layer 2's 32 $\times$ 80-bit weights are small enough to live in LUTs, so the block-RAM
+count does not change.
 
 % ============================================================================
 \section{Verification}\label{sec:verif}
@@ -257,11 +307,20 @@ Testbench & What it checks & Checks & Status \\
 \file{tb\_layer1.v} & 64 golden images $\times$ 32 neurons, both \texttt{acc1} and
   \texttt{hq}; 3 synthetic images; latency, \texttt{busy}, \texttt{done}, and a
   stray \texttt{start} on every run & 4{,}259 & \done \\
+\file{tb\_layer2.v} & layer 2 alone, fed the golden hidden values: 64 images $\times$
+  10 scores; 3 synthetic inputs; control & 737 & \done \\
+\file{tb\_argmax.v} & 12 directed cases (ties, int32 extremes, signed trap); 2{,}000
+  random vectors, 526 with a tied maximum; control & 4{,}024 & \done \\
+\file{tb\_mlp\_core.v} & end to end, pixels in: hidden values, scores, and digit for
+  64 golden images; stray starts during each stage; 100 images streamed back to
+  back; accuracy & 2{,}880 & \done \\
+\midrule
+\multicolumn{2}{@{}l}{\textbf{Total}} & \textbf{14{,}166} & \\
 \bottomrule
 \end{tabularx}
 \end{center}
-Both pass in Vivado's simulator (xsim) and in Icarus Verilog
-(\file{scripts/run\_sims.sh}).
+All pass in Icarus Verilog (\file{scripts/run\_sims.sh}). \file{tb\_mac} and
+\file{tb\_layer1} have also been confirmed in Vivado's simulator (xsim).
 
 \subsection{Why \file{tb\_layer1} needs synthetic images}
 Mutation testing showed that real MNIST digits have blind spots. Their border
@@ -275,6 +334,7 @@ hardware reads, so a packing error in \file{w1\_t.mem} is caught too. The test
 prints how many times ReLU (41) and the clamp (2) were exercised, as proof those
 paths were tested.
 
+\needspace{18\baselineskip}
 \subsection{Mutation testing results}
 \textbf{\file{tb\_layer1.v}}: number of failing checks per planted bug. Every bug is caught.
 \begin{center}
@@ -303,22 +363,51 @@ overriding \texttt{load} (caught only by the directed test), and a 16-bit
 truncated accumulator (caught only by the random and golden tests). Each tier
 catches bugs the others miss.
 
+\textbf{Layer 2, argmax, and the core}: failing checks in the module's own
+testbench and in the end-to-end \file{tb\_mlp\_core.v}.
+\begin{center}
+\begin{tabular}{@{}llrr@{}}
+\toprule
+Module & Planted bug & Unit test & End-to-end \\
+\midrule
+argmax   & \texttt{>=} instead of \texttt{>} (highest index wins ties) & 531  & \textbf{0 (missed)} \\
+argmax   & scan stops before class 9                      & 2{,}164 & 78 \\
+argmax   & unsigned comparison                            & 1{,}993 & 128 \\
+argmax   & running maximum starts at 0, not score 0       & 279  & 4 \\
+layer 2  & last hidden value skipped                      & 727  & 706 \\
+layer 2  & first hidden value skipped                     & 487  & 466 \\
+layer 2  & weight bytes in reversed order                 & 670  & 768 \\
+layer 2  & bias not reloaded between images               & 670  & 756 \\
+layer 2  & MAC enable a cycle early                       & 660  & 642 \\
+core     & start accepted while layer 2 / argmax busy     & --   & 2 \\
+core     & argmax started by layer 1 instead of layer 2   & --   & 769 \\
+core     & \texttt{busy} still high during \texttt{done}  & --   & 64 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Every bug is caught somewhere. The first row is why \file{tb\_argmax} exists:
+real MNIST scores never tie, so a wrong tie-break is invisible end to end.
+Only a directed tie test catches it. The first ``core'' bug was at first
+caught only by luck (it showed up as a wrong latency on the \emph{next}
+image). The testbench now watches every stage for 1{,}000 cycles after each
+stray start, so it is caught where it happens.
+
 % ============================================================================
 \section{Planned work and open design questions}
 
 \begin{itemize}
-  \item \textbf{Layer 2} ($32 \rightarrow 10$): same broadcast pattern with 10 MACs and
-        32 accumulate cycles. Needs a pixel-major \file{w2\_t.mem} (32 words $\times$
-        80 bits) from the exporter. No requantize: \texttt{acc2} goes straight to argmax.
-  \item \textbf{argmax}: must break ties like \texttt{numpy.argmax}: the
-        \emph{lowest} index wins. A strict ``greater than'' compare scanning from
-        index 0 does this. Verify with a synthetic tie.
   \item \textbf{Image buffer + UART}: 784-byte BRAM written by a UART receiver;
         prediction sent back by a UART transmitter. Protocol not yet defined.
         The host can send raw MNIST bytes and the board converts each with
         $\texttt{pixel} \gg 1$. This was checked: for all 256 byte values it gives
         exactly the same int8 as \file{quantize\_input} in Python.
-  \item \textbf{Timing closure} at 100\,MHz once the full design is assembled.
+  \item \textbf{Board top level}: \file{mlp\_core} plus image buffer, UART, the
+        Basys~3 clock and reset, and a 7-segment display of the predicted digit.
+  \item \textbf{Timing closure} at 100\,MHz once the board-level design is assembled.
+        The longest paths are likely the 32 parallel requantizers in layer~1;
+        they can be pipelined if needed.
+  \item \textbf{Parameterize the layers}: \file{layer1.v} and \file{layer2.v} share
+        their control logic and could become one parameterized module.
 \end{itemize}
 
 % ============================================================================
@@ -326,7 +415,8 @@ catches bugs the others miss.
 \begin{center}
 \begin{tabularx}{\linewidth}{@{}lX@{}}
 \toprule
-\file{src/}     & Synthesizable Verilog (\file{mac.v}, \file{layer1.v}, \ldots) \\
+\file{src/}     & Synthesizable Verilog: \file{mac.v}, \file{layer1.v}, \file{layer2.v},
+                  \file{argmax.v}, \file{mlp\_core.v} (top) \\
 \file{sim/}     & Self-checking testbenches (\file{tb\_*.v}) \\
 \file{rtl/}     & Generated weights, golden vectors, \file{params.vh}. Committed; canonical. \\
 \file{scripts/} & \file{create\_project.tcl} (rebuilds the Vivado project),

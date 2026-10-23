@@ -10,6 +10,7 @@ Pure numpy; run it as many times as you like while tuning.
 Inputs:   mlp_fp32.npz     (from train_mlp.py)
 Outputs:  rtl/w1.mem  w2.mem  b1.mem  b2.mem
           rtl/w1_t.mem      (layer-1 weights, pixel-major, 256-bit words)
+          rtl/w2_t.mem      (layer-2 weights, hidden-major, 80-bit words)
           rtl/test_images.mem
           rtl/params.vh
           rtl/golden.txt
@@ -173,6 +174,17 @@ with open(p("w1_t.mem"), "w") as f:
             word |= (int(W1q[n, i]) & 0xFF) << (8 * n)
         f.write(f"{word:0{n_hidden * 2}x}\n")   # 784 lines x 64 hex digits
 
+# Layer-2 weights for layer2.v, same scheme: one 80-bit word per HIDDEN unit
+# holding that unit's weight for all 10 output neurons. Output neuron n is
+# bits [8n+7:8n] (neuron 0 = rightmost two hex digits).
+with open(p("w2_t.mem"), "w") as f:
+    n_out, n_hid = W2q.shape
+    for j in range(n_hid):
+        word = 0
+        for n in range(n_out):
+            word |= (int(W2q[n, j]) & 0xFF) << (8 * n)
+        f.write(f"{word:0{n_out * 2}x}\n")      # 32 lines x 20 hex digits
+
 # Test images for the on-board run.
 write_mem(p("test_images.mem"), Xq_test[:N_HW], 8)
 with open(p("test_labels.txt"), "w") as f:
@@ -231,4 +243,4 @@ memory footprint (int8 weights)
 with open("quant_report.txt", "w") as f:
     f.write(report)
 print(report)
-print(f"wrote {OUT_DIR}/ -- w1.mem w1_t.mem w2.mem b1.mem b2.mem test_images.mem params.vh golden.txt")
+print(f"wrote {OUT_DIR}/ -- w1.mem w1_t.mem w2.mem w2_t.mem b1.mem b2.mem test_images.mem params.vh golden.txt")

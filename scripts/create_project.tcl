@@ -26,8 +26,9 @@ set proj_dir  [file join $repo vivado]
 set proj_name mlp_accel
 set part      xc7a35tcpg236-1
 
-set sim_top   tb_layer1      ;# change to run a different testbench
-set synth_top layer1         ;# becomes the board-level top module later
+set sim_top   tb_mlp_core    ;# end-to-end test; switch tops later with:
+                             ;#   set_property top tb_layer2 [get_filesets sim_1]
+set synth_top mlp_core       ;# becomes the board-level top module later
 
 puts "repo root: $repo"
 file mkdir $proj_dir
