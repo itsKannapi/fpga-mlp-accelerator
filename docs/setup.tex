@@ -1,0 +1,194 @@
+\documentclass[11pt]{article}
+\input{preamble}
+\newcommand{\doctitle}{Developer Setup Guide}
+
+\begin{document}
+\makedoctitle{From a fresh machine to passing testbenches, and how we work together}{2026-10-16}
+
+\begin{note}[Short version]
+Clone the repo $\rightarrow$ install Vivado 2026.1 (Artix-7 only) and its free
+Basic license $\rightarrow$ in Vivado's Tcl console,
+\cmd{source <repo>/scripts/create\_project.tcl} $\rightarrow$ Run Simulation
+$\rightarrow$ look for \texttt{ALL TESTS PASSED}. No Vivado (e.g.\ on a Mac)? Run
+\cmd{./scripts/run\_sims.sh} with Icarus Verilog instead.
+\end{note}
+
+\tableofcontents
+
+% ============================================================================
+\section{What you need}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Item & Notes \\
+\midrule
+Windows or Linux PC & \textbf{Vivado does not run on macOS.} Mac users can still run
+  simulations with Icarus (Section~\ref{sec:icarus}) and do Python and docs work. \\
+16\,GB RAM, $\sim$60\,GB disk & For Vivado with a single device family installed. \\
+Git & Windows: \cmd{winget install Git.Git} \\
+Python 3.12+ & Only needed to retrain or re-export weights. 3.14 works. \\
+Basys~3 + micro-USB cable & Only for hardware steps. All simulation works without the board. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ============================================================================
+\section{Get the code}
+\begin{lstlisting}[language=bash]
+git clone https://github.com/itsKannapi/fpga-mlp-accelerator.git
+cd fpga-mlp-accelerator
+git config --global user.name  "Your Name"
+git config --global user.email "ID+username@users.noreply.github.com"
+\end{lstlisting}
+Use the \texttt{noreply} address from GitHub $\rightarrow$ Settings $\rightarrow$
+Emails (``Keep my email addresses private''). Every commit's email is public in a
+public repo. Commits still count on your profile.
+
+Clone somewhere with a short path with no spaces (e.g.\ \file{C:\textbackslash dev\textbackslash}),
+not a OneDrive-synced folder: OneDrive tries to sync Vivado's gigabytes of build files.
+
+% ============================================================================
+\section{Install Vivado 2026.1}
+\begin{enumerate}
+  \item Download the AMD unified installer (free AMD account required).
+  \item Choose \textbf{Vivado}, Standard/Basic edition. In the device list,
+        \textbf{deselect everything except 7 Series $\rightarrow$ Artix-7}. Skip Vitis.
+        This keeps the install near 60\,GB instead of 100\,GB or more.
+  \item If you later search for part \texttt{xc7a35tcpg236-1} and get 0 matches, Artix-7
+        wasn't installed: \emph{Help $\rightarrow$ Add Design Tools or Devices}
+        (or re-run \file{xsetup.exe}) and add it.
+\end{enumerate}
+
+\subsection{License (required even for the free tier)}
+From 2026.1, Vivado will not start without a license file, including the free
+tier. The error is \emph{``Vivado Design Suite cannot be launched because a
+valid license was not found.''}
+\begin{enumerate}
+  \item Open the Vivado License Manager $\rightarrow$ \emph{View System Information}.
+        Write down a Host ID (MAC address or disk serial).
+  \item On AMD's licensing site, select \textbf{``Vivado Basic Tier License, Node
+        Locked License''} (Certificate, No Charge).
+  \item Lock it to the Host ID from step 1, \textbf{character for character}.
+        A mismatched Host ID is the most common cause of the error above.
+  \item License Manager $\rightarrow$ \emph{Load License} $\rightarrow$ select the
+        \file{.lic} file. Check \emph{View License Status} shows
+        \textbf{HostID matches = YES}.
+\end{enumerate}
+\begin{warn}[Do not pick these]
+\textbf{``Start Now! 60 Day Trial''} and \textbf{``Vivado Enterprise Tier, 60 Day
+Evaluation''} expire mid-project. \textbf{``HL WebPACK 2015 and Earlier''} only
+works for old tool versions. The Basic license renews yearly.
+\end{warn}
+
+% ============================================================================
+\section{Create the Vivado project}\label{sec:proj}
+The project folder \file{vivado/} is not in git. It is generated, and it would
+contain absolute paths from whoever made it. Build your own:
+\begin{enumerate}
+  \item Start Vivado. At the start screen, open the \textbf{Tcl Console} tab at the bottom.
+        (If a project is open, \emph{File $\rightarrow$ Close Project} first.)
+  \item Run, with forward slashes:
+\begin{lstlisting}[language=tcl]
+source C:/dev/fpga-mlp-accelerator/scripts/create_project.tcl
+\end{lstlisting}
+  \item It prints \texttt{Project ready: ...mlp\_accel.xpr}. The project is open.
+\end{enumerate}
+The script writes \file{vivado/data\_dir.vh} (where \file{rtl/} lives on
+\emph{your} machine), adds every \file{src/*.v} and \file{sim/*.v}
+\textbf{without copying them}, sets the include paths, and sets the simulation to
+run to completion. Re-run it any time the project gets into a weird state, or
+after a teammate adds a new source file.
+
+% ============================================================================
+\section{Run the testbenches}
+
+\subsection{In Vivado}
+\emph{Flow Navigator $\rightarrow$ Run Simulation $\rightarrow$ Run Behavioral
+Simulation}. Read the result in the Tcl Console (scroll up if needed). To run a
+different testbench, type
+\cmd{set\_property top tb\_mac [get\_filesets sim\_1]} and run again.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Testbench & Expected last lines & Time in xsim \\
+\midrule
+\file{tb\_mac}    & \texttt{ALL TESTS PASSED (2266 checks)} & $\sim$20\,s \\
+\file{tb\_layer1} & \texttt{ALL TESTS PASSED (4259 checks)} & under a minute \\
+\bottomrule
+\end{tabular}
+\end{center}
+\file{tb\_layer1} also prints \emph{exercised ReLU 41 times, clamp 2 times}. If
+you see \texttt{could not open golden.txt}, the project wasn't made by the script:
+re-run Section~\ref{sec:proj}.
+
+\subsection{Without Vivado: Icarus Verilog}\label{sec:icarus}
+Fast, free, runs on macOS, Linux, and Git Bash on Windows. Use it as a quick
+check before every push.
+\begin{lstlisting}[language=bash]
+brew install icarus-verilog        # macOS
+sudo apt install iverilog          # Ubuntu
+./scripts/run_sims.sh
+\end{lstlisting}
+It runs every \file{sim/tb\_*.v}, prints one line per testbench, and exits
+non-zero if anything fails.
+
+% ============================================================================
+\section{Python (only to retrain or re-export)}
+\begin{lstlisting}[language=bash]
+python -m venv .venv              # Windows: py -m venv .venv
+.venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
+pip install torch torchvision numpy
+python quantize_export.py
+\end{lstlisting}
+\begin{warn}[Weights are frozen]
+Don't re-run \file{train\_mlp.py}: retraining gives different weights and
+breaks every golden comparison. If \cmd{python} opens the Microsoft Store on
+Windows, use \cmd{py}, or turn off the \texttt{python.exe} alias under
+\emph{Settings $\rightarrow$ Apps $\rightarrow$ Advanced app settings $\rightarrow$
+App execution aliases}. Re-exporting currently needs a file only Joey has
+(open issue \#1 in \file{progress.tex}).
+\end{warn}
+
+% ============================================================================
+\section{Programming the board}
+\begin{enumerate}
+  \item Plug into the \textbf{PROG} USB port and turn on the board's power switch.
+  \item \emph{Open Hardware Manager $\rightarrow$ Open Target $\rightarrow$ Auto Connect}.
+  \item Click \textbf{Program Device} and select the \file{.bit} file. Opening the
+        target is not enough: the board shows ``Programmed'' even while it is still
+        running the factory demo from flash.
+\end{enumerate}
+Programming over JTAG is lost at power-off; reprogram each session. If Auto Connect
+finds nothing: check the cable carries data (not charge-only), try a port on the
+motherboard, or install Digilent Adept for its USB drivers.
+
+% ============================================================================
+\section{How we work together}
+\begin{enumerate}
+  \item \textbf{Branch per task}: \cmd{git switch -c layer2-argmax}. Don't commit
+        straight to \texttt{main}.
+  \item \textbf{Every new module comes with a self-checking testbench} that prints
+        \texttt{ALL TESTS PASSED}, and a few planted bugs to prove it can fail
+        (\file{design.tex} \S4).
+  \item \textbf{Before opening a pull request}: \cmd{./scripts/run\_sims.sh} passes,
+        \file{progress.tex} has a dated entry, and the PDFs are rebuilt.
+  \item \textbf{Pull request}: push the branch, open a PR on GitHub, and have one
+        teammate review it before merging into \texttt{main}.
+  \item \textbf{Never commit} \file{vivado/}, \file{.venv/}, \file{data/}, or
+        \file{*.npz}. \file{.gitignore} already blocks them; check
+        \cmd{git status} before \cmd{git add}.
+  \item \textbf{Commit messages} say what changed and how it was verified, e.g.\
+        \emph{``Add layer 2 + argmax; bit-exact vs golden on 64 images''}.
+\end{enumerate}
+
+\subsection{Building these documents}
+\begin{lstlisting}[language=bash]
+cd docs
+latexmk -pdf design.tex progress.tex setup.tex
+\end{lstlisting}
+Needs a LaTeX distribution: MiKTeX on Windows, MacTeX on macOS, \texttt{texlive}
+on Linux. Or upload \file{docs/} to Overleaf. The PDFs are committed so they can
+be read on GitHub; rebuild and commit them whenever a \file{.tex} changes.
+
+\end{document}

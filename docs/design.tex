@@ -1,0 +1,341 @@
+\documentclass[11pt]{article}
+\input{preamble}
+\newcommand{\doctitle}{Design Specification}
+
+\begin{document}
+\makedoctitle{Architecture, arithmetic contract, and verification of the int8 MNIST accelerator}{2026-10-16}
+
+\begin{note}[How to use this document]
+This is the \emph{reference}: what the hardware does and why. If the RTL and this
+document disagree, one of them is a bug, so fix whichever is wrong in the same
+pull request. Day-to-day status lives in \file{progress.tex}; installing the
+tools lives in \file{setup.tex}.
+\end{note}
+
+\tableofcontents
+
+% ============================================================================
+\section{Goal and scope}
+
+We are building a hardware inference engine for a small neural network that
+classifies handwritten digits (MNIST), running on a Digilent Basys~3 board
+(AMD Artix-7 \texttt{xc7a35tcpg236-1}, 100\,MHz clock).
+
+\begin{itemize}
+  \item \textbf{Network:} a multilayer perceptron, $784 \rightarrow 32 \rightarrow 10$,
+        ReLU on the hidden layer. Trained in PyTorch, then quantized to 8-bit integers.
+  \item \textbf{Hardware does inference only.} All training happens offline in Python.
+        The FPGA runs the forward pass using fixed, pre-computed weights.
+  \item \textbf{Correctness standard:} the hardware must match the Python integer
+        model \emph{bit for bit}, not approximately. Every intermediate value is
+        checked against a golden reference (Section~\ref{sec:verif}).
+  \item \textbf{Deliverable:} classify MNIST test images sent from a PC over UART
+        and report accuracy measured on real hardware.
+\end{itemize}
+
+\textbf{Explicitly out of scope} for the first version: training on the FPGA,
+camera or other live input, convolutional layers, and external DDR memory (all
+weights fit on-chip, so none is needed).
+
+% ============================================================================
+\section{Model and quantization}
+
+\subsection{Training}
+\file{train\_mlp.py} trains the float32 reference network.
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Architecture  & $784 \rightarrow 32$ (ReLU) $\rightarrow 10$, with biases \\
+Optimizer     & Adam, learning rate $10^{-3}$, batch 128, 8 epochs, seed 0 \\
+Input scaling & pixels divided by 255 to $[0,1]$; \emph{no} mean/std normalization \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Skipping mean/std normalization is deliberate: it keeps every input
+non-negative, so the hardware needs no signed input path. No softmax is
+implemented, because $\arg\max$ gives the same answer with or without it.
+
+\subsection{Integer scheme}
+\file{quantize\_export.py} converts the model to integers and \textbf{is the
+hardware specification}: whatever arithmetic it performs, the RTL must reproduce
+exactly. Quantization is symmetric and per-tensor (one scale per tensor rather
+than per neuron, which costs a little accuracy and saves a lot of hardware).
+
+\begin{align*}
+x_q &= \operatorname{round}(127\,x) \in [0, 127]
+  && \text{input pixel (int8)}\\
+W_q &= \operatorname{round}(W / s_W),\quad s_W = \max|W| / 127
+  && \text{weights (int8)}\\
+b_q &= \operatorname{round}\!\big(b / (s_x s_W)\big)
+  && \text{biases (int32, accumulator scale)}\\[0.4em]
+\mathit{acc}_1 &= \max\!\big(0,\; W_{1q}\,x_q + b_{1q}\big)
+  && \text{layer 1 + ReLU (int32)}\\
+h_q &= \min\!\big(127,\; (\mathit{acc}_1 + 2^{S-1}) \gg S\big),\quad S = 12
+  && \text{requantize: round half up, clamp}\\
+\mathit{acc}_2 &= W_{2q}\,h_q + b_{2q}
+  && \text{layer 2 (int32)}\\
+\hat{y} &= \arg\max(\mathit{acc}_2)
+  && \text{predicted digit}
+\end{align*}
+
+The shift amount $S$ (\texttt{SHIFT1}) is the smallest shift that keeps the
+largest post-ReLU layer-1 value inside int8 range, measured on 2{,}000
+\emph{training} images. Calibrating on training images rather than test images
+keeps test data out of the design, so the reported accuracy is honest.
+
+\subsection{Measured results}
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+float32 test accuracy (10{,}000 images)        & 95.86\% \\
+int8 test accuracy                              & 95.86\% \\
+Accuracy change from quantization               & $+0.00$ percentage points \\
+Same prediction as float32                     & 99.74\% of images \\
+\midrule
+\texttt{SHIFT1}                                 & 12 (rounding on) \\
+Largest post-ReLU layer-1 value (calibration)   & 294{,}415 \\
+Accumulator headroom vs.\ int32                 & $7{,}294\times$ \\
+\midrule
+Weight storage, layer 1 / layer 2               & 25{,}088 B / 320 B (24.8\,KiB total) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{warn}[Weights are frozen]
+Training is not bit-reproducible across machines. The committed files in
+\file{rtl/} are the canonical weights; do not re-run \file{train\_mlp.py} unless
+the team agrees to re-verify everything. \file{quantize\_export.py} is
+deterministic given \file{mlp\_fp32.npz}, but that file is not in git (see the
+open issue in \file{progress.tex}).
+\end{warn}
+
+\subsection{Generated files (\file{rtl/})}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+File & Contents \\
+\midrule
+\file{params.vh}        & Verilog \texttt{`define}s: sizes, \texttt{ACC\_W}, \texttt{SHIFT1}, \texttt{ROUND\_SHIFT}. Single source of truth; never edit by hand. \\
+\file{w1.mem}           & Layer-1 weights, \textbf{neuron-major}: 784 weights for neuron 0, then neuron 1, \ldots{} One int8 per line. Used by \file{tb\_mac.v}. \\
+\file{w1\_t.mem}        & Layer-1 weights, \textbf{pixel-major and packed}: 784 lines, each a 256-bit word holding pixel $i$'s weight for all 32 neurons. Neuron $n$ is bits $[8n{+}7{:}8n]$, so neuron 0 is the rightmost two hex digits. Read by \file{layer1.v}. \\
+\file{b1.mem}, \file{b2.mem} & Biases, int32, two's complement hex. \\
+\file{w2.mem}           & Layer-2 weights, neuron-major (10 $\times$ 32). \\
+\file{test\_images.mem}, \file{test\_labels.txt} & First 100 MNIST test images (int8) and labels, for the on-board run. \\
+\file{golden.txt}       & For the first 64 test images: label, prediction, and every intermediate value (\texttt{acc1}, \texttt{hq}, \texttt{acc2}). The testbenches compare against this. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ============================================================================
+\section{Hardware architecture}
+
+\subsection{Block diagram}
+\begin{center}
+\begin{tikzpicture}[
+  blk/.style={draw=accent, fill=accent!6, rounded corners=2pt, minimum height=1.1cm,
+              align=center, font=\small, inner sep=5pt},
+  plan/.style={blk, draw=todoc, fill=todoc!6, dashed},
+  mem/.style={draw=muted, fill=codebg, minimum height=0.8cm, align=center, font=\footnotesize, inner sep=4pt},
+  arr/.style={-{Stealth[length=2.2mm]}, thick, color=muted},
+  lbl/.style={font=\scriptsize, color=muted}]
+  \node[plan] (src) {Image buffer\\\scriptsize 784 B BRAM\\\scriptsize (from UART)};
+  \node[blk, right=1.5cm of src, minimum width=3.6cm] (l1) {\textbf{Layer 1}\\\scriptsize 32 MACs in parallel\\\scriptsize ReLU + requantize};
+  \node[plan, right=1.1cm of l1] (l2) {Layer 2\\\scriptsize 10 MACs};
+  \node[plan, right=1.5cm of l2] (am) {argmax};
+  \node[mem, above=0.55cm of l1] (wr) {weight ROM \file{w1\_t.mem}\\784 $\times$ 256 bit};
+  \draw[arr] (src) -- node[above, lbl]{pixel} node[below, lbl]{1/clk} (l1);
+  \draw[arr] (wr) -- (l1);
+  \draw[arr] (l1) -- node[above, lbl]{$h[32]$} node[below, lbl]{int8} (l2);
+  \draw[arr] (l2) -- node[above, lbl]{10 scores} node[below, lbl]{int32} (am);
+  \draw[arr] (am.east) -- ++(0.7,0) node[right, lbl]{digit};
+  \node[font=\scriptsize, color=muted, below=0.45cm of l1.south east, anchor=north] {solid = built and verified \quad dashed = planned};
+\end{tikzpicture}
+\end{center}
+
+\subsection{MAC unit (\file{src/mac.v})}
+One multiply-accumulate per clock: $\mathit{acc} \leftarrow \mathit{acc} + a \cdot b$.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+Signal & Width & Behavior \\
+\midrule
+\texttt{load} & 1 & At the clock edge, $\mathit{acc} \leftarrow \texttt{init}$ (the neuron's bias). \textbf{Has priority over \texttt{en}.} \\
+\texttt{en}   & 1 & At the clock edge, $\mathit{acc} \leftarrow \mathit{acc} + a\cdot b$. Otherwise holds. \\
+\texttt{a}, \texttt{b} & 8 signed & Activation and weight. The 16-bit product cannot overflow. \\
+\texttt{init}, \texttt{acc} & 32 signed & Bias in, running sum out. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The \texttt{(* use\_dsp = "yes" *)} attribute maps each MAC onto one DSP48E1 slice.
+The Basys~3 has 90, which is the real limit on how many MACs can run in parallel.
+
+\subsection{Layer 1 (\file{src/layer1.v})}
+All 32 hidden neurons are computed at once. Each clock, \emph{one} pixel is
+broadcast to all 32 MACs, and one 256-bit read of the weight ROM gives every MAC
+its own weight for that pixel. Layer 1 therefore takes 784 accumulate cycles,
+regardless of the number of neurons (up to the DSP limit).
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+Port & Dir/width & Meaning \\
+\midrule
+\texttt{start}    & in, 1   & Pulse for one cycle while idle to process an image. Ignored while busy. \\
+\texttt{busy}     & out, 1  & High from the cycle after \texttt{start} until \texttt{done}. \\
+\texttt{done}     & out, 1  & One-cycle pulse; \texttt{h\_flat} is valid from then until the next start. \\
+\texttt{pix\_addr}& out, 10 & Index (0--783) of the pixel wanted next. \\
+\texttt{pix\_data}& in, 8   & That pixel, \textbf{valid one cycle after \texttt{pix\_addr}} (synchronous BRAM timing). \\
+\texttt{h\_flat}  & out, 256& 32 int8 activations; neuron $n$ in bits $[8n{+}7{:}8n]$. \\
+\texttt{acc\_flat}& out, 1024& Raw int32 accumulators (pre-ReLU), exposed for verification. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Timing.} Address $k$ is presented during the cycle after clock edge $k$.
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Edge & Event \\
+\midrule
+0       & \texttt{start} sampled; FSM leaves idle \\
+1       & all MACs load their bias \\
+$k+1$   & pixel $k$ and weight word $k$ arrive from memory \\
+$k+2$   & MACs accumulate pixel $k$ \quad ($k = 0 \ldots 783$, so edges 2--785) \\
+786     & requantized outputs registered; \texttt{done} goes high \\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{Latency: 786 cycles = 7.86\,\textmu s at 100\,MHz.}
+
+\subsection{Resource estimate}
+Synthesized for Artix-7 with the open-source Yosys flow; Vivado's numbers will
+be recorded here once the full design is implemented.
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Resource & Layer 1 uses & Basys~3 has & Share \\
+\midrule
+DSP48E1 slices        & 32     & 90      & 36\% \\
+Block RAM (RAMB18)    & 15     & 100     & 15\% \\
+LUTs                  & 1{,}657 & 20{,}800 & 8\% \\
+Flip-flops            & 1{,}299 & 41{,}600 & 3\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ============================================================================
+\section{Verification}\label{sec:verif}
+
+\subsection{Strategy}
+\begin{enumerate}
+  \item Python produces \textbf{golden vectors}: the exact integer value of every
+        intermediate signal for 64 real test images (\file{golden.txt}).
+  \item Each testbench runs the RTL on the same inputs and compares every value.
+        Python and Verilog are independent implementations, so agreement means
+        the hardware matches the model.
+  \item Every testbench is \textbf{self-checking}: it prints
+        \texttt{ALL TESTS PASSED} or names the exact failing value. Nobody has to
+        read waveforms to know whether it worked.
+  \item Every testbench is checked by \textbf{mutation testing}: we plant
+        realistic bugs in the RTL and confirm the testbench catches each one.
+        A testbench that passes is only meaningful if it can also fail.
+\end{enumerate}
+
+\subsection{Testbench results}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lXrl@{}}
+\toprule
+Testbench & What it checks & Checks & Status \\
+\midrule
+\file{tb\_mac.v} & 10 directed edge cases (sign, extremes, hold, load priority);
+  2{,}000 random dot products; 8 images $\times$ 32 neurons vs.\ golden & 2{,}266 & \done \\
+\file{tb\_layer1.v} & 64 golden images $\times$ 32 neurons, both \texttt{acc1} and
+  \texttt{hq}; 3 synthetic images; latency, \texttt{busy}, \texttt{done}, and a
+  stray \texttt{start} on every run & 4{,}259 & \done \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Both pass in Vivado's simulator (xsim) and in Icarus Verilog
+(\file{scripts/run\_sims.sh}).
+
+\subsection{Why \file{tb\_layer1} needs synthetic images}
+Mutation testing showed that real MNIST digits have blind spots. Their border
+pixels are always black, so dropping the first or last pixel changes no result.
+No real image pushes a hidden neuron past 127, so a missing clamp is
+invisible. Three made-up images close those gaps: a \emph{ramp} (every pixel
+nonzero and different), \emph{all-127}, and a \emph{hot} image that lights every
+pixel where the strongest neuron has a positive weight. Their expected values
+are computed from \file{w1.mem} (neuron-major), not the \file{w1\_t.mem} the
+hardware reads, so a packing error in \file{w1\_t.mem} is caught too. The test
+prints how many times ReLU (41) and the clamp (2) were exercised, as proof those
+paths were tested.
+
+\subsection{Mutation testing results}
+\textbf{\file{tb\_layer1.v}}: number of failing checks per planted bug. Every bug is caught.
+\begin{center}
+\begin{tabular}{@{}lrrrrl@{}}
+\toprule
+Planted bug & acc1 & hq & synthetic & control & \\
+\midrule
+MAC enable driven a cycle early (pipeline slip)   & 0    & 0    & 52 & 0  & caught \\
+Weight memory one address behind pixels           & 2048 & 2048 & 96 & 0  & caught \\
+Truncate instead of round when requantizing       & 0    & 705  & 24 & 0  & caught \\
+Weight bytes in reversed order                    & 1875 & 1811 & 96 & 0  & caught \\
+Bias not reloaded between images                  & 2048 & 2048 & 96 & 0  & caught \\
+ReLU missing before requantize                    & 0    & 583  & 41 & 0  & caught \\
+Last pixel skipped                                & 0    & 0    & 52 & 67 & caught \\
+First pixel skipped                               & 0    & 0    & 87 & 67 & caught \\
+Clamp to 127 missing                              & 0    & 0    & 2  & 0  & caught \\
+Shift off by one                                  & 0    & 1437 & 53 & 0  & caught \\
+\bottomrule
+\end{tabular}
+\end{center}
+Note the first row: a pipeline-timing bug that passes \emph{every} real image and
+is caught only by the synthetic stage.
+
+\textbf{\file{tb\_mac.v}}: unsigned multiply (2{,}261 failures), \texttt{en}
+overriding \texttt{load} (caught only by the directed test), and a 16-bit
+truncated accumulator (caught only by the random and golden tests). Each tier
+catches bugs the others miss.
+
+% ============================================================================
+\section{Planned work and open design questions}
+
+\begin{itemize}
+  \item \textbf{Layer 2} ($32 \rightarrow 10$): same broadcast pattern with 10 MACs and
+        32 accumulate cycles. Needs a pixel-major \file{w2\_t.mem} (32 words $\times$
+        80 bits) from the exporter. No requantize: \texttt{acc2} goes straight to argmax.
+  \item \textbf{argmax}: must break ties like \texttt{numpy.argmax}: the
+        \emph{lowest} index wins. A strict ``greater than'' compare scanning from
+        index 0 does this. Verify with a synthetic tie.
+  \item \textbf{Image buffer + UART}: 784-byte BRAM written by a UART receiver;
+        prediction sent back by a UART transmitter. Protocol not yet defined.
+        The host can send raw MNIST bytes and the board converts each with
+        $\texttt{pixel} \gg 1$. This was checked: for all 256 byte values it gives
+        exactly the same int8 as \file{quantize\_input} in Python.
+  \item \textbf{Timing closure} at 100\,MHz once the full design is assembled.
+\end{itemize}
+
+% ============================================================================
+\section{Repository layout}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\file{src/}     & Synthesizable Verilog (\file{mac.v}, \file{layer1.v}, \ldots) \\
+\file{sim/}     & Self-checking testbenches (\file{tb\_*.v}) \\
+\file{rtl/}     & Generated weights, golden vectors, \file{params.vh}. Committed; canonical. \\
+\file{scripts/} & \file{create\_project.tcl} (rebuilds the Vivado project),
+                  \file{run\_sims.sh} (runs every testbench in Icarus) \\
+\file{docs/}    & This document, \file{progress.tex}, \file{setup.tex}, and their PDFs \\
+\file{vivado/}  & Generated Vivado project. \textbf{Not committed}; rebuilt per machine. \\
+\file{*.py}     & \file{train\_mlp.py} (training), \file{quantize\_export.py} (the spec) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

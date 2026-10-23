@@ -1,0 +1,7 @@
+# Shell scripts must keep Unix line endings or bash fails on macOS/Linux,
+# even when the file was committed from Windows.
+*.sh  text eol=lf
+*.tcl text eol=lf
+# Never touch line endings or diff these.
+*.pdf binary
+*.png binary

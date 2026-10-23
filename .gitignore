@@ -29,3 +29,15 @@ webtalk*
 Thumbs.db
 desktop.ini
 .vscode/
+
+# ---------------------------------------------------------------- LaTeX
+# Build byproducts only. The compiled PDFs in docs/ ARE committed so the
+# docs can be read on GitHub without a LaTeX install.
+docs/*.aux
+docs/*.out
+docs/*.toc
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
+docs/*.lof
+docs/*.lot

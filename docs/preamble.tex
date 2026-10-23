@@ -1,0 +1,112 @@
+% ============================================================================
+% preamble.tex -- shared style for every document in docs/
+%
+% Each document starts with:
+%     \documentclass[11pt]{article}
+%     \input{preamble}
+%     \newcommand{\doctitle}{...}
+%
+% Team names live in ONE place (below). Edit them here and every document
+% updates on the next build.
+% ============================================================================
+
+% ---------------------------------------------------------------- team
+\newcommand{\projname}{FPGA int8 MLP Accelerator}
+\newcommand{\repourl}{https://github.com/itsKannapi/fpga-mlp-accelerator}
+\newcommand{\memberA}{Joey (\texttt{itsKannapi})}
+\newcommand{\memberB}{Teammate~2 (TBD)}
+\newcommand{\memberC}{Teammate~3 (TBD)}
+
+% ---------------------------------------------------------------- packages
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, calc}
+\usepackage[most]{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{colorlinks=true, linkcolor=accent, urlcolor=accent, citecolor=accent}
+
+% ---------------------------------------------------------------- colors
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{muted}{HTML}{5F6B7A}
+\definecolor{rule}{HTML}{C9D1DA}
+\definecolor{okc}{HTML}{2E7D32}
+\definecolor{progc}{HTML}{B26A00}
+\definecolor{todoc}{HTML}{8A8F98}
+\definecolor{codebg}{HTML}{F5F7FA}
+
+% ---------------------------------------------------------------- layout
+\setcounter{tocdepth}{1}   % sections only, keeps the contents to a few lines
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlist{itemsep=0.15em, topsep=0.3em}
+\renewcommand{\arraystretch}{1.18}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.4em}{0.5em}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{muted}\projname}
+\fancyhead[R]{\small\color{muted}\doctitle}
+\fancyfoot[C]{\small\color{muted}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\color{rule}\hrule width\headwidth height\headrulewidth}
+
+% ---------------------------------------------------------------- title block
+\newcommand{\makedoctitle}[2]{%  #1 = subtitle, #2 = last-updated date
+  \thispagestyle{plain}
+  {\color{muted}\small\MakeUppercase{\projname}}\par\vspace{0.2em}
+  {\Huge\bfseries\color{accent}\doctitle}\par\vspace{0.4em}
+  {\large #1}\par\vspace{0.6em}
+  {\small\color{muted}Team: \memberA, \memberB, \memberC\quad$\cdot$\quad
+   Last updated #2\quad$\cdot$\quad\href{\repourl}{\texttt{\repourl}}}\par
+  \vspace{0.4em}{\color{rule}\rule{\linewidth}{0.6pt}}\par\vspace{0.6em}
+}
+
+% ---------------------------------------------------------------- status tags
+\newcommand{\tagbox}[2]{\tcbox[on line, colback=#1!12, colframe=#1!12,
+  coltext=#1!70!black, boxsep=0pt, left=3pt, right=3pt, top=1.5pt, bottom=1.5pt,
+  arc=2pt]{\footnotesize\bfseries #2}}
+\newcommand{\done}{\tagbox{okc}{DONE}}
+\newcommand{\inprog}{\tagbox{progc}{IN PROGRESS}}
+\newcommand{\todo}{\tagbox{todoc}{TO DO}}
+\newcommand{\stretchgoal}{\tagbox{accent}{STRETCH}}
+
+% ---------------------------------------------------------------- callouts
+\newtcolorbox{note}[1][Note]{colback=accent!5, colframe=accent!60,
+  boxrule=0.6pt, arc=2pt, left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fonttitle=\bfseries\small, title=#1, coltitle=white}
+\newtcolorbox{warn}[1][Watch out]{colback=progc!6, colframe=progc!70,
+  boxrule=0.6pt, arc=2pt, left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fonttitle=\bfseries\small, title=#1, coltitle=white}
+
+% ---------------------------------------------------------------- code
+\lstdefinelanguage{SV}{
+  morekeywords={module,endmodule,input,output,wire,reg,signed,always,posedge,
+    negedge,if,else,begin,end,assign,parameter,localparam,generate,endgenerate,
+    for,genvar,case,endcase,function,endfunction,integer,initial},
+  sensitive=true, morecomment=[l]{//}, morecomment=[s]{/*}{*/},
+  morestring=[b]", morestring=[b]`}
+\lstset{
+  basicstyle=\ttfamily\small, backgroundcolor=\color{codebg},
+  keywordstyle=\color{accent}\bfseries, commentstyle=\color{muted}\itshape,
+  frame=single, rulecolor=\color{rule}, framesep=4pt, xleftmargin=4pt,
+  xrightmargin=4pt, columns=fullflexible, keepspaces=true, breaklines=true,
+  showstringspaces=false, upquote=true, aboveskip=0.6em, belowskip=0.6em}
+\newcommand{\cmd}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}

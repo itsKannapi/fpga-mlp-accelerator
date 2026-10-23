@@ -1,0 +1,168 @@
+\documentclass[11pt]{article}
+\input{preamble}
+\newcommand{\doctitle}{Progress Log}
+
+\begin{document}
+\makedoctitle{Milestones, dated log, open issues, and lessons learned}{2026-10-16}
+
+\begin{note}[How to update this document]
+Update it in the \emph{same pull request} as the work it describes: flip the
+milestone status, add a dated entry to the top of the log (newest first), and
+rebuild the PDF (\cmd{latexmk -pdf progress.tex} in \file{docs/}). Copy the
+entry template from Section~\ref{sec:template}. Keep entries factual: what
+changed, how it was verified, the commit.
+\end{note}
+
+% ============================================================================
+\section{Team}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Member & Focus \\
+\midrule
+\memberA & Project lead; RTL and verification so far \\
+\memberB & TBD \\
+\memberC & TBD \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Names are set once in \file{docs/preamble.tex} and appear in every document.
+
+% ============================================================================
+\section{Milestones}
+Target: a working, documented on-board demo within four weeks of starting the RTL.
+
+\begin{center}
+\begin{longtable}{@{}p{0.6cm}p{8.4cm}p{1.6cm}p{3.0cm}@{}}
+\toprule
+Wk & Milestone & Owner & Status \\
+\midrule
+\endhead
+1 & Toolchain: Vivado 2026.1 + license, board smoke test & Joey & \done \\
+1 & Train and quantize the MLP; export weights and golden vectors & Joey & \done \\
+1 & MAC unit + three-tier self-checking testbench & Joey & \done \\
+\midrule
+2 & Layer 1: 32 parallel MACs, ReLU + requantize, bit-exact vs.\ golden & Joey & \done \\
+2 & Repo made portable (project script, Icarus runner); docs; GitHub & Joey & \inprog \\
+2 & Layer 2 (32$\rightarrow$10) + argmax & TBD & \todo \\
+2 & Full-network testbench: predicted digit + all 10 scores vs.\ golden & TBD & \todo \\
+\midrule
+3 & Image buffer (784\,B BRAM) + UART receiver & TBD & \todo \\
+3 & UART transmitter for the prediction; define the host protocol & TBD & \todo \\
+3 & Top-level module + Basys~3 constraints (\file{.xdc}) & TBD & \todo \\
+3 & Timing closure at 100\,MHz & TBD & \todo \\
+3 & Host script: send 100 test images, report on-board accuracy & TBD & \todo \\
+\midrule
+4 & Record Vivado utilization + timing in \file{design.tex} & TBD & \todo \\
+4 & README polish, block diagram, demo video & TBD & \todo \\
+\midrule
+-- & Binary/ternary (XNOR + popcount) variant reusing the pipeline & TBD & \stretchgoal \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+% ============================================================================
+\section{Log}
+Newest first. Commit hashes refer to the \texttt{main} branch.
+
+\subsection*{2026-10-16 \quad Layer 1 verified; repo prepared for the team}
+\begin{itemize}
+  \item Built \file{src/layer1.v}: 32 MACs fed by one broadcast pixel per clock and a
+        256-bit weight word. Latency 786 cycles (7.86\,\textmu s at 100\,MHz).
+  \item Exporter now also writes \file{rtl/w1\_t.mem} (pixel-major). Re-running it
+        reproduced every existing file byte for byte.
+  \item \file{sim/tb\_layer1.v}: 4{,}259 checks, \textbf{all pass in Vivado xsim}.
+        Mutation testing found that real MNIST images miss three bug classes
+        (border pixels are always 0, no neuron saturates); added synthetic images, and
+        all 10 planted bugs are now caught. Details in \file{design.tex} \S4.
+  \item Estimated resources (Yosys): 32 DSP, 15 RAMB18, $\sim$1.7k LUT.
+  \item Removed the hard-coded \file{C:/dev/...} path from the Verilog.
+  \item Added two scripts: \file{create\_project.tcl} rebuilds the Vivado project on
+        any machine, and \file{run\_sims.sh} runs every testbench in Icarus.
+        Started these docs.
+  \item Commit \texttt{e044fd4} (layer 1); docs/portability commit to follow.
+\end{itemize}
+
+\subsection*{2026-10-09 \quad MAC unit verified}
+\begin{itemize}
+  \item \file{src/mac.v}: int8$\times$int8 into a 32-bit accumulator, mapped to one DSP48.
+  \item \file{sim/tb\_mac.v}: 10 directed + 2{,}000 random + 256 golden checks
+        (2{,}266 total), \textbf{all pass in Vivado xsim} using the real trained weights.
+  \item Three planted bugs each caught; each test tier catches bugs the others miss.
+  \item Commit \texttt{1276047}.
+\end{itemize}
+
+\subsection*{2026-10-08 \quad Board bring-up; model trained and quantized}
+\begin{itemize}
+  \item Smoke test: a two-switch AND gate on LD0 programmed over JTAG and working.
+        This confirms license, synthesis, implementation, bitstream, drivers.
+  \item Trained the $784\rightarrow32\rightarrow10$ MLP: 95.86\% test accuracy.
+        int8 version also 95.86\% (99.74\% of predictions identical). \texttt{SHIFT1}~=~12.
+  \item Golden vectors for 64 images exported to \file{rtl/golden.txt}.
+  \item Commit \texttt{7e70d2d}.
+\end{itemize}
+
+\subsection*{2026-10-01 \quad Vivado installed}
+\begin{itemize}
+  \item Vivado 2026.1 needs a license file even for the free tier. Installed the
+        free \emph{Basic Tier, node-locked} license (see \file{setup.tex}).
+  \item The Artix-7 family was missing from the install; added it through the
+        installer's add-devices mode.
+\end{itemize}
+
+\subsection*{Before RTL \quad Project scoped}
+Chose an int8 MLP accelerator over a RISC-V CPU and over camera/microphone
+projects: it tells a complete ``AI hardware'' story and needs no exotic I/O, so
+it is finishable before internship application deadlines.
+
+% ============================================================================
+\section{Open issues}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}p{0.5cm}Xp{2.2cm}@{}}
+\toprule
+\# & Issue & Owner \\
+\midrule
+1 & \file{mlp\_fp32.npz} (37\,MB, holds the float weights) is not in git, so only
+    Joey's machine can re-run \file{quantize\_export.py}. Fix before anyone needs
+    a new export: commit a small weights-only file and have the script load test
+    data itself. & TBD \\
+2 & \file{scripts/create\_project.tcl} has been dry-run but not yet run inside
+    Vivado. First person to use it: confirm, then close this. & Joey \\
+3 & Commit history contains a personal email address. It can only be cheaply
+    replaced with the GitHub \texttt{noreply} address \emph{before} the first push;
+    doing so changes every commit hash in this log. & Joey \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ============================================================================
+\section{Lessons learned}
+\begin{itemize}
+  \item \textbf{``Programmed'' in Hardware Manager does not mean your design is on
+        the chip}: it also shows for the factory demo loaded from flash. Use
+        \emph{Program Device}. Each switch lighting its own LED means it's still the
+        factory demo.
+  \item \textbf{JTAG programming is volatile}: power-cycling restores the factory demo.
+  \item \textbf{Vivado's simulator stops at 1\,\textmu s by default}; the project script
+        sets it to run to completion (runtime \cmd{-all}).
+  \item \textbf{Real data can hide bugs.} MNIST borders are blank, so pixel-skip
+        bugs pass real images. Always add synthetic inputs that touch every path,
+        and use mutation testing to prove the testbench can fail.
+  \item \textbf{Weight layout is part of the interface.} Changing from neuron-major
+        to pixel-major needed a new export file; the testbench checks one layout
+        against the other.
+\end{itemize}
+
+% ============================================================================
+\section{Entry template}\label{sec:template}
+\begin{lstlisting}[language={[LaTeX]TeX}]
+\subsection*{YYYY-MM-DD \quad Short title}
+\begin{itemize}
+  \item What changed (files, modules).
+  \item How it was verified (testbench, checks, xsim or Icarus).
+  \item Anything surprising or still open.
+  \item Commit \texttt{abc1234}.
+\end{itemize}
+\end{lstlisting}
+
+\end{document}
